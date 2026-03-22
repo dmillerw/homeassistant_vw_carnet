@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Volkswagen vehicle",
+        "description": "Enter your myVW account details and S-PIN.",
+        "data": {
+          "name": "Name",
+          "email": "Email",
+          "password": "Password",
+          "spin": "S-PIN",
+          "session_path": "Session cache path",
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to log in or fetch vehicle data."
+    }
+  }
+}
