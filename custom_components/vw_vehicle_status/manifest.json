@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "config_flow": true,
   "requirements": [
-    "python_vw_carnet>=0.4.0"
+    "pydantic>=2.12.5",
+    "python_vw_carnet==0.4.0"
   ],
   "codeowners": [
     "@dylan"
