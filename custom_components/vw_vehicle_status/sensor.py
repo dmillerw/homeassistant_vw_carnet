@@ -1,8 +1,13 @@
-from functools import partial
-
 from dataclasses import dataclass
+from functools import partial
+from threading import Lock
+from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
@@ -14,14 +19,14 @@ from .const import (
     CONF_DISTANCE_UNIT,
     CONF_EMAIL,
     CONF_NAME,
-    DEFAULT_DISTANCE_UNIT,
-    DISTANCE_UNIT_MI,
-    DOMAIN,
     CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
     CONF_SESSION_PATH,
     CONF_SPIN,
+    DEFAULT_DISTANCE_UNIT,
     DEFAULT_SCAN_INTERVAL,
+    DISTANCE_UNIT_MI,
+    DOMAIN,
     KM_TO_MI,
 )
 from .coordinator import VWVehicleStatusCoordinator
@@ -30,7 +35,6 @@ from .coordinator import VWVehicleStatusCoordinator
 @dataclass(frozen=True, kw_only=True)
 class VWVehicleSensorDescription(SensorEntityDescription):
     value_key: str
-    # If True, the raw coordinator value is in km and should be converted when mi is configured
     is_distance: bool = False
 
 
@@ -41,8 +45,7 @@ SENSORS: tuple[VWVehicleSensorDescription, ...] = (
         icon="mdi:eye",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_key="last_seen",
-   ),
-    # ── Distance sensors (raw km in coordinator) ──────────────────────────
+    ),
     VWVehicleSensorDescription(
         key="mileage",
         name="Mileage",
@@ -51,7 +54,6 @@ SENSORS: tuple[VWVehicleSensorDescription, ...] = (
         value_key="mileage_km",
         is_distance=True,
     ),
-    # ── Distance sensors (raw km in coordinator) ──────────────────────────
     VWVehicleSensorDescription(
         key="next_maintenance_milestone",
         name="Next Maintenance Milestone",
@@ -68,7 +70,6 @@ SENSORS: tuple[VWVehicleSensorDescription, ...] = (
         value_key="cruise_range_km",
         is_distance=True,
     ),
-    # ── EV / charging ────────────────────────────────────────────────────
     VWVehicleSensorDescription(
         key="charging_status",
         name="Charging Status",
@@ -107,26 +108,29 @@ SENSORS: tuple[VWVehicleSensorDescription, ...] = (
         native_unit_of_measurement="%",
         value_key="battery_capacity_percent",
     ),
-    # ── Vehicle status ────────────────────────────────────────────────────
     VWVehicleSensorDescription(
         key="lock_status",
         name="Lock Status",
         icon="mdi:car-key",
         value_key="lock_status",
     ),
-    # ── Location ──────────────────────────────────────────────────────────
     VWVehicleSensorDescription(
         key="last_parked_timestamp",
         name="Last Parked At",
         icon="mdi:eye",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_key="last_parked_timestamp",
-    )
+    ),
 )
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     session_path = entry.data.get(CONF_SESSION_PATH) or None
+    client_lock = Lock()
     client = await hass.async_add_executor_job(
         partial(
             VWClient,
@@ -136,19 +140,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             session_path=session_path,
         )
     )
+    garage = await hass.async_add_executor_job(partial(_get_garage, client, client_lock))
 
-    coordinator = VWVehicleStatusCoordinator(
-        hass,
-        client,
-        entry.data[CONF_NAME],
-        entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-    )
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    await coordinator.async_config_entry_first_refresh()
+    coordinators: dict[str, VWVehicleStatusCoordinator] = {}
+    entities: list[VWVehicleSensor] = []
 
-    async_add_entities(
-        [VWVehicleSensor(coordinator, entry, description) for description in SENSORS]
-    )
+    for vehicle in garage.data.vehicles:
+        vehicle_name = _format_vehicle_name(vehicle)
+        coordinator = VWVehicleStatusCoordinator(
+            hass,
+            client,
+            client_lock,
+            entry.data[CONF_NAME],
+            vehicle.vehicleId,
+            vehicle.vin,
+            vehicle_name,
+            entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+        )
+        coordinators[vehicle.vehicleId] = coordinator
+        await coordinator.async_config_entry_first_refresh()
+        entities.extend(
+            VWVehicleSensor(coordinator, entry, description) for description in SENSORS
+        )
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "client": client,
+        "client_lock": client_lock,
+        "coordinators": coordinators,
+    }
+    async_add_entities(entities)
+
+
+def _get_garage(client: VWClient, client_lock: Lock) -> Any:
+    with client_lock:
+        return client.get_garage()
+
+
+def _format_vehicle_name(vehicle: Any) -> str:
+    model_name = getattr(vehicle, "modelName", None) or vehicle.vehicleId
+    model_year = getattr(vehicle, "modelYear", None)
+    if model_year:
+        return f"{model_year} {model_name}"
+    return model_name
 
 
 class VWVehicleSensor(CoordinatorEntity[VWVehicleStatusCoordinator], SensorEntity):
@@ -162,17 +195,23 @@ class VWVehicleSensor(CoordinatorEntity[VWVehicleStatusCoordinator], SensorEntit
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
-        self._distance_unit: str = entry.data.get(CONF_DISTANCE_UNIT, DEFAULT_DISTANCE_UNIT)
+        self._distance_unit: str = entry.data.get(
+            CONF_DISTANCE_UNIT, DEFAULT_DISTANCE_UNIT
+        )
         self._entry_name: str = entry.data[CONF_NAME]
-        self._attr_name = f"{self._entry_name} {description.name}"
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_name = (
+            f"{self._entry_name} {coordinator.vehicle_name} {description.name}"
+        )
+        self._attr_unique_id = (
+            f"{entry.entry_id}_{coordinator.vehicle_id}_{description.key}"
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
         vin = self.coordinator.data.get("vin") if self.coordinator.data else None
         return DeviceInfo(
-            identifiers={(DOMAIN, vin or self._attr_unique_id)},
-            name=self._entry_name,
+            identifiers={(DOMAIN, vin or self.coordinator.vehicle_id)},
+            name=f"{self._entry_name} {self.coordinator.vehicle_name}",
             manufacturer="Volkswagen",
             serial_number=vin,
         )
@@ -197,6 +236,7 @@ class VWVehicleSensor(CoordinatorEntity[VWVehicleStatusCoordinator], SensorEntit
         return {
             "vin": self.coordinator.data.get("vin"),
             "vehicle_id": self.coordinator.data.get("vehicle_id"),
+            "vehicle_name": self.coordinator.data.get("vehicle_name"),
             "latitude": self.coordinator.data.get("last_parked_latitude"),
-            "longitude": self.coordinator.data.get("last_parked_longitude")
+            "longitude": self.coordinator.data.get("last_parked_longitude"),
         }
