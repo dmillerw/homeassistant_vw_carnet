@@ -67,6 +67,6 @@ class VWVehicleStatusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             session_path=session_path,
         )
         try:
-            client.get_garage(force=True)
+            client.get_garage()
         finally:
             client.close()
