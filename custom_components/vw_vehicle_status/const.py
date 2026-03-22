@@ -16,4 +16,4 @@ DISTANCE_UNIT_KM = "km"
 DISTANCE_UNIT_MI = "mi"
 KM_TO_MI = 0.621371
 
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "switch"]

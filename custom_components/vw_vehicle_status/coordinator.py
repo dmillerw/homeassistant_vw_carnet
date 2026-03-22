@@ -74,6 +74,7 @@ class VWVehicleStatusCoordinator(DataUpdateCoordinator[dict]):
                 data["charge_power"] = summary.data.batteryAndPlugStatus.chargingStatus.chargePower
                 data["battery_capacity_percent"] = summary.data.batteryAndPlugStatus.batteryStatus.currentSOCPct
                 data["remaining_charge_time"] = summary.data.batteryAndPlugStatus.chargingStatus.remainingChargingTimeToComplete
+                data["preclimate_active"] = summary.data.climateStatus.climateStatusReport.climateStatusInd != "off"
             except Exception as err:
                 _LOGGER.debug("EV summary unavailable for %s: %s", self.vehicle_id, err)
 

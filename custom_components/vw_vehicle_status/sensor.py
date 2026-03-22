@@ -1,7 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
-from threading import Lock
-from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -13,18 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from python_vw_carnet import VWClient
 
 from .const import (
     CONF_DISTANCE_UNIT,
-    CONF_EMAIL,
     CONF_NAME,
-    CONF_PASSWORD,
-    CONF_SCAN_INTERVAL,
-    CONF_SESSION_PATH,
-    CONF_SPIN,
     DEFAULT_DISTANCE_UNIT,
-    DEFAULT_SCAN_INTERVAL,
     DISTANCE_UNIT_MI,
     DOMAIN,
     KM_TO_MI,
@@ -129,59 +119,15 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    session_path = entry.data.get(CONF_SESSION_PATH) or None
-    client_lock = Lock()
-    client = await hass.async_add_executor_job(
-        partial(
-            VWClient,
-            email=entry.data[CONF_EMAIL],
-            password=entry.data[CONF_PASSWORD],
-            spin=entry.data[CONF_SPIN],
-            session_path=session_path,
-        )
-    )
-    garage = await hass.async_add_executor_job(partial(_get_garage, client, client_lock))
-
-    coordinators: dict[str, VWVehicleStatusCoordinator] = {}
     entities: list[VWVehicleSensor] = []
+    entry_data = hass.data[DOMAIN][entry.entry_id]
 
-    for vehicle in garage.data.vehicles:
-        vehicle_name = _format_vehicle_name(vehicle)
-        coordinator = VWVehicleStatusCoordinator(
-            hass,
-            client,
-            client_lock,
-            entry.data[CONF_NAME],
-            vehicle.vehicleId,
-            vehicle.vin,
-            vehicle_name,
-            entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-        )
-        coordinators[vehicle.vehicleId] = coordinator
+    for coordinator in entry_data["coordinators"].values():
         await coordinator.async_config_entry_first_refresh()
         entities.extend(
             VWVehicleSensor(coordinator, entry, description) for description in SENSORS
         )
-
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        "client": client,
-        "client_lock": client_lock,
-        "coordinators": coordinators,
-    }
     async_add_entities(entities)
-
-
-def _get_garage(client: VWClient, client_lock: Lock) -> Any:
-    with client_lock:
-        return client.get_garage()
-
-
-def _format_vehicle_name(vehicle: Any) -> str:
-    model_name = getattr(vehicle, "modelName", None) or vehicle.vehicleId
-    model_year = getattr(vehicle, "modelYear", None)
-    if model_year:
-        return f"{model_year} {model_name}"
-    return model_name
 
 
 class VWVehicleSensor(CoordinatorEntity[VWVehicleStatusCoordinator], SensorEntity):
